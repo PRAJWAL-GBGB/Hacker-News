@@ -1,115 +1,30 @@
-import { createHash } from "crypto";
-import {
-  LogInWithUsernameAndPasswordError,
-  SignUpWithUsernameAndPasswordError,
-  type LogInWithUsernameAndPasswordResult,
-  type SignUpWithUsernameAndPasswordResult,
-} from "./authentication-type.js";
-import { prisma } from "../../extras/prisma.js";
+import { createMiddleware } from "hono/factory";
 import jwt from "jsonwebtoken";
 import { jwtSecretKey } from "../../../environment";
 
-export const createPasswordHash = (parameters: {
-  password: string;
-}): string => {
-  return createHash("sha256").update(parameters.password).digest("hex");
-};
-
-const createJWToken = (parameters: {
-  id: string;
-  username: string;
-}): string => {
-  // Generate token
-  const jwtPayload: jwt.JwtPayload = {
-    iss: "https://purpleshorts.co.in",
-    sub: parameters.id,
-    username: parameters.username,
+//high-order function -> function having a function as a parameter which returns a function
+export const tokenMiddleware = createMiddleware<{
+  Variables: {
+    userId: string;
   };
+}>(async (context, next) => {
+  const token = context.req.header("token");
 
-  const token = jwt.sign(jwtPayload, jwtSecretKey, {
-    expiresIn: "30d",
-  });
+  if (!token) {
+    return context.json({ error: "Unauthorized" }, 401);
+  }
 
-  return token;
-};
-
-export const signUpWithUsernameAndPassword = async (parameters: {
-  username: string;
-  password: string;
-}): Promise<SignUpWithUsernameAndPasswordResult> => {
   try {
-    const existingUser = await prisma.user.findUnique({
-      where: {
-        username: parameters.username,
-      },
-    });
+    const payload = jwt.verify(token, jwtSecretKey) as jwt.JwtPayload;
 
-    if (existingUser) {
-      throw SignUpWithUsernameAndPasswordError.CONFLICTING_USERNAME;
-    }
+    const userId = payload.sub;
 
-    const hashedPassword = createPasswordHash({
-      password: parameters.password,
-    });
-
-    const user = await prisma.user.create({
-      data: {
-        username: parameters.username,
-        password: hashedPassword,
-      },
-    });
-
-    //Generate Token
-    const jwtPayload: jwt.JwtPayload = {
-      iss: "http://purpleshorts.co.in",
-      sub: user.id,
-      username: user.username,
-    };
-
-    const token = jwt.sign(jwtPayload, jwtSecretKey, {
-      expiresIn: "30d",
-    });
-
-    const result: SignUpWithUsernameAndPasswordResult = {
-      token,
-      user,
-    };
-
-    return result;
-  } catch (e) {
-    console.error(e);
-    throw SignUpWithUsernameAndPasswordError.UNKNOWN;
+      if (userId) {
+          context.set("userId", userId);
+      }
+  } catch (error) {
+    return context.json({ error: "Unauthorized" }, 401);
   }
-};
+  await next();
+});
 
-export const logInWithUsernameAndPassword = async (parameters: {
-  username: string;
-  password: string;
-}): Promise<LogInWithUsernameAndPasswordResult> => {
-  const passwordHash = createPasswordHash({
-    password: parameters.password,
-  });
-
-  const user = await prisma.user.findUnique({
-    where: {
-      username: parameters.username,
-      password: passwordHash,
-    },
-  });
-
-  if (!user) {
-    throw LogInWithUsernameAndPasswordError.INCORRECT_USERNAME_OR_PASSWORD;
-  }
-
-  const token = createJWToken({
-    id: user.id,
-    username: user.username,
-  });
-
-  const result: LogInWithUsernameAndPasswordResult = {
-    token,
-    user,
-  };
-
-  return result;
-};
